@@ -1,4 +1,11 @@
-#!/usr/bin/env python3
+
+
+
+
+
+        
+   
+  #!/usr/bin/env python3
 """
 Qdrant-based Experience Search Engine with Session Management
 
@@ -22,13 +29,11 @@ Key Features:
 import numpy as np
 from qdrant_client import QdrantClient
 from qdrant_client.http.models import Filter, FieldCondition, MatchValue, Range
-from typing import List, Dict, Optional
+from typing import List, Dict, Optional, Any
 import json
 import re
 import os
 import uuid
-import threading
-from datetime import datetime, timedelta
 from dotenv import load_dotenv
 from sentence_transformers import SentenceTransformer
 import torch
@@ -36,115 +41,10 @@ import torch
 # Load environment variables
 load_dotenv()
 
-class SessionManager:
-    """Manages sessions for global variables and user state."""
-    
-    def __init__(self, session_timeout_minutes: int = 30):
-        self.sessions: Dict[str, Dict] = {}
-        self.session_timeout = timedelta(minutes=session_timeout_minutes)
-        self.lock = threading.Lock()
-        
-    def create_session(self, session_id: str = None) -> str:
-        """Create a new session and return its ID."""
-        if session_id is None:
-            session_id = str(uuid.uuid4())
-        
-        with self.lock:
-            self.sessions[session_id] = {
-                'created_at': datetime.now(),
-                'last_accessed': datetime.now(),
-                'search_history': [],
-                'preferences': {
-                    'semantic_threshold': 0.3,
-                    'default_location': None,
-                    'max_price_filter': None,
-                    'min_price_filter': None
-                },
-                'cached_results': {},
-                'query_count': 0
-            }
-        
-        print(f"🆔 Created new session: {session_id}")
-        return session_id
-    
-    def get_session(self, session_id: str) -> Optional[Dict]:
-        """Get session data by ID."""
-        with self.lock:
-            if session_id in self.sessions:
-                session = self.sessions[session_id]
-                session['last_accessed'] = datetime.now()
-                return session
-        return None
-    
-    def update_session(self, session_id: str, key: str, value) -> bool:
-        """Update a specific key in session data."""
-        with self.lock:
-            if session_id in self.sessions:
-                self.sessions[session_id][key] = value
-                self.sessions[session_id]['last_accessed'] = datetime.now()
-                return True
-        return False
-    
-    def update_preferences(self, session_id: str, preferences: Dict) -> bool:
-        """Update user preferences for a session."""
-        with self.lock:
-            if session_id in self.sessions:
-                self.sessions[session_id]['preferences'].update(preferences)
-                self.sessions[session_id]['last_accessed'] = datetime.now()
-                return True
-        return False
-    
-    def add_to_search_history(self, session_id: str, query: str, results_count: int):
-        """Add search to session history."""
-        with self.lock:
-            if session_id in self.sessions:
-                session = self.sessions[session_id]
-                session['search_history'].append({
-                    'query': query,
-                    'timestamp': datetime.now(),
-                    'results_count': results_count
-                })
-                session['query_count'] += 1
-                session['last_accessed'] = datetime.now()
-                
-                # Keep only last 50 searches
-                if len(session['search_history']) > 50:
-                    session['search_history'] = session['search_history'][-50:]
-    
-    def cleanup_expired_sessions(self):
-        """Remove expired sessions."""
-        current_time = datetime.now()
-        with self.lock:
-            expired_sessions = [
-                session_id for session_id, session_data in self.sessions.items()
-                if current_time - session_data['last_accessed'] > self.session_timeout
-            ]
-            
-            for session_id in expired_sessions:
-                del self.sessions[session_id]
-                print(f"🧹 Cleaned up expired session: {session_id}")
-    
-    def get_active_sessions(self) -> List[str]:
-        """Get list of active session IDs."""
-        with self.lock:
-            return list(self.sessions.keys())
-    
-    def get_session_stats(self, session_id: str) -> Dict:
-        """Get statistics for a session."""
-        session = self.get_session(session_id)
-        if session:
-            return {
-                'session_id': session_id,
-                'created_at': session['created_at'],
-                'last_accessed': session['last_accessed'],
-                'query_count': session['query_count'],
-                'search_history_count': len(session['search_history']),
-                'preferences': session['preferences']
-            }
-        return {}
+# Simple session management (similar to maiz.py)
+from typing import Dict, Any
 
-# Global session manager instance
-session_manager = SessionManager()
+sessions: Dict[str, Dict[str, Any]] = {}
 
 class QdrantSearchEngine:
     def __init__(self, url: str = None, api_key: str = None, session_id: str = None):
@@ -158,11 +58,23 @@ class QdrantSearchEngine:
         """
         # Initialize or get session
         if session_id is None:
-            self.session_id = session_manager.create_session()
+            self.session_id = str(uuid.uuid4())
         else:
             self.session_id = session_id
-            if not session_manager.get_session(session_id):
-                session_manager.create_session(session_id)
+            
+        # Initialize session if it doesn't exist
+        if self.session_id not in sessions:
+            sessions[self.session_id] = {
+                'search_history': [],
+                'preferences': {
+                    'semantic_threshold': 0.3,
+                    'default_location': None,
+                    'max_price_filter': None,
+                    'min_price_filter': None
+                },
+                'cached_results': {},
+                'query_count': 0
+            }
         
         print(f"🆔 Using session: {self.session_id}")
         
@@ -189,8 +101,8 @@ class QdrantSearchEngine:
         self.semantic_model = SentenceTransformer('all-MiniLM-L6-v2')
         
         # Get semantic threshold from session preferences
-        session_data = session_manager.get_session(self.session_id)
-        self.semantic_threshold = session_data['preferences']['semantic_threshold']
+        session_data = sessions.get(self.session_id, {})
+        self.semantic_threshold = session_data.get('preferences', {}).get('semantic_threshold', 0.3)
         print("✅ Semantic model loaded!")
 
         self.collection_name = os.getenv("QDRANT_COLLECTION_NAME")  # Name of the collection
@@ -395,8 +307,8 @@ class QdrantSearchEngine:
         """
         # Get session-specific threshold if not provided
         if similarity_threshold is None:
-            session_data = session_manager.get_session(self.session_id)
-            similarity_threshold = session_data['preferences']['semantic_threshold'] if session_data else self.semantic_threshold
+            session_data = sessions.get(self.session_id, {})
+            similarity_threshold = session_data.get('preferences', {}).get('semantic_threshold', self.semantic_threshold)
             
         print(f"🔍 Analyzing query semantically: '{query}' (threshold: {similarity_threshold})")
         
@@ -553,8 +465,8 @@ class QdrantSearchEngine:
         """
         try:
             # Get session preferences for defaults
-            session_data = session_manager.get_session(self.session_id)
-            preferences = session_data['preferences'] if session_data else {}
+            session_data = sessions.get(self.session_id, {})
+            preferences = session_data.get('preferences', {})
             
             # Apply session defaults if not provided
             if location is None:
@@ -638,22 +550,29 @@ class QdrantSearchEngine:
                     session_data['cached_results'] = {}
                 
                 cached_results = session_data['cached_results']
-                cached_results[cache_key] = {
-                    'results': results,
-                    'timestamp': datetime.now()
-                }
+                cached_results[cache_key] = {'results': results}
                 
                 # Keep only last 10 cached searches
                 if len(cached_results) > 10:
-                    oldest_key = min(cached_results.keys(), 
-                                   key=lambda k: cached_results[k]['timestamp'])
+                    # Remove oldest entry (first key)
+                    oldest_key = next(iter(cached_results))
                     del cached_results[oldest_key]
                 
-                session_manager.update_session(self.session_id, 'cached_results', cached_results)
+                sessions[self.session_id]['cached_results'] = cached_results
             
             # Add to search history
             search_history_query = f"Tags: {', '.join(query_tags)}" if use_structured_parsing else query
-            session_manager.add_to_search_history(self.session_id, search_history_query, len(results))
+            if 'search_history' not in sessions[self.session_id]:
+                sessions[self.session_id]['search_history'] = []
+            sessions[self.session_id]['search_history'].append({
+                'query': search_history_query,
+                'results_count': len(results)
+            })
+            sessions[self.session_id]['query_count'] = sessions[self.session_id].get('query_count', 0) + 1
+            
+            # Keep only last 50 searches
+            if len(sessions[self.session_id]['search_history']) > 50:
+                sessions[self.session_id]['search_history'] = sessions[self.session_id]['search_history'][-50:]
             
             return results
             
@@ -707,12 +626,21 @@ class QdrantSearchEngine:
             threshold: Similarity threshold (0.0 to 1.0)
         """
         threshold = max(0.0, min(1.0, threshold))
-        session_manager.update_preferences(self.session_id, {'semantic_threshold': threshold})
+        if self.session_id in sessions:
+            sessions[self.session_id]['preferences']['semantic_threshold'] = threshold
         print(f"🎯 Semantic similarity threshold set to: {threshold} for session {self.session_id}")
     
     def get_session_stats(self) -> Dict:
         """Get statistics for the current session."""
-        return session_manager.get_session_stats(self.session_id)
+        session = sessions.get(self.session_id, {})
+        if session:
+            return {
+                'session_id': self.session_id,
+                'query_count': session.get('query_count', 0),
+                'search_history_count': len(session.get('search_history', [])),
+                'preferences': session.get('preferences', {})
+            }
+        return {}
     
 
 
@@ -776,10 +704,8 @@ class QdrantSearchEngine:
     
     def clear_session_cache(self):
         """Clear cached results for this session."""
-        session_data = session_manager.get_session(self.session_id)
-        if session_data:
-            session_data['cached_results'] = {}
-            session_manager.update_session(self.session_id, 'cached_results', {})
+        if self.session_id in sessions:
+            sessions[self.session_id]['cached_results'] = {}
             print(f"🧹 Cleared cache for session {self.session_id}")
     
     def reset_session_preferences(self):
@@ -790,7 +716,8 @@ class QdrantSearchEngine:
             'max_price_filter': None,
             'min_price_filter': None
         }
-        session_manager.update_preferences(self.session_id, default_preferences)
+        if self.session_id in sessions:
+            sessions[self.session_id]['preferences'] = default_preferences
         print(f"🔄 Reset preferences for session {self.session_id}")
     
     def analyze_query_semantics(self, query: str, top_k: int = 10) -> List[tuple]:
@@ -844,9 +771,6 @@ def main():
     try:
         print("🌐 Qdrant Cloud Experience Search Engine with Session Support")
         print("Make sure you have uploaded data using 'qdrant_uploader.py' first!")
-        
-        # Clean up expired sessions
-        session_manager.cleanup_expired_sessions()
         
         # Check for environment variables first
         url = os.getenv('QDRANT_URL')
