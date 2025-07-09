@@ -4,6 +4,7 @@ from supabase import create_client, Client
 from dotenv import load_dotenv
 import os
 from swipetool import get_top_chunks
+import uuid
 
 load_dotenv()
 SUPABASE_URL = os.getenv("SUPABASE_URL")
@@ -25,10 +26,11 @@ def get_initial_experiences(user_id: str):
 
     # Get 7 random experiences
     experiences = supabase.table("experiences").select("*").limit(7).execute().data
-    return {"status": "new", "experiences": experiences}
+    session_id = uuid.uuid4()
+    return {"status": "new", "experiences": experiences,"session_id": session_id}
 
 @app.post("/recommend")
-def recommend_more(request: SwipeRequest):
+def recommend_more(request: SwipeRequest,user_id: str,session_id: str,likes: str,skips: str,dislikes: str,whishlist: str):
     # Fetch swiped experience data
     experiences = []
     for eid in request.swiped_ids:
