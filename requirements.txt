@@ -6,3 +6,4 @@ python-dotenv
 qdrant-client
 openai
 nltk
+sentence_transformers

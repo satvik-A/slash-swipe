@@ -13,9 +13,28 @@ supabase: Client = create_client(SUPABASE_URL, SUPABASE_KEY)
 
 app = FastAPI()
 
+app.add_middleware(
+    CORSMiddleware,
+    # allow_origins=["*"],  # Allow all origins by default
+    # You can specify specific origins if needed
+    allow_origins=[
+        "http://localhost:8080",  # local development
+        "https://slash-rag-agent.onrender.com",
+        "https://slash-experiences.netlify.app",  # fixed: added missing comma
+        "http://localhost:5173", 
+    ],
+    allow_credentials=True,
+    allow_methods=["*"],
+    allow_headers=["*"],
+)
+
 class SwipeRequest(BaseModel):
     user_id: str
-    swiped_ids: list[str]
+    session_id: str
+    likes: List[str]
+    skips: List[str]
+    dislikes: List[str]
+    wishlist: List[str]
 
 @app.get("/start")
 def get_initial_experiences(user_id: str):
@@ -30,7 +49,7 @@ def get_initial_experiences(user_id: str):
     return {"status": "new", "experiences": experiences,"session_id": session_id}
 
 @app.post("/recommend")
-def recommend_more(request: SwipeRequest,user_id: str,session_id: str,likes: str,skips: str,dislikes: str,whishlist: str):
+def recommend_more(request: SwipeRequest):
     # Fetch swiped experience data
     experiences = []
     for eid in request.swiped_ids:
