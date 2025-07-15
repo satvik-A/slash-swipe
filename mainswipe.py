@@ -72,6 +72,18 @@ def get_search_engine():
         logger.error(f"Error creating QdrantSearchEngine: {str(e)}")
         return None
 
+def get_experiences_by_ids(experience_ids: List[str]) -> List[dict]:
+    """Fetch full experience records from Supabase by IDs."""
+    if not experience_ids:
+        return []
+    
+    try:
+        response = supabase.table("experiences").select("*").in_("id", experience_ids).execute()
+        return response.data if response.data else []
+    except Exception as e:
+        logger.error(f"Error fetching experiences by IDs: {str(e)}")
+        return []
+
 @app.get("/start")
 async def get_initial_experiences(user_id: str):
     """
@@ -84,11 +96,11 @@ async def get_initial_experiences(user_id: str):
     try:
         logger.info(f"Getting initial experiences for user {user_id}")
         
-        # Fetch user history from Supabase (no local caching)
+        # Fetch user history from Supabase
         user_history_response = supabase.table("swipes").select("*").eq("user_id", user_id).execute()
         user_has_history = bool(user_history_response.data)
         
-        # Fetch already swiped IDs from Supabase (no local storage)
+        # Fetch already swiped IDs from Supabase
         already_swiped_response = supabase.table("swipes").select("likes, dislikes, skips").eq("user_id", user_id).execute()
         already_swiped = []
         if already_swiped_response.data:
@@ -109,15 +121,15 @@ async def get_initial_experiences(user_id: str):
                 if record.get("likes"):
                     liked_ids.extend(record["likes"])
             
-            # If we have Qdrant and liked experiences, use vector search
+            # If we have Qdrant and liked experiences, use it for recommendations
             if search_engine and liked_ids:
-                # Fetch liked experiences from Supabase
-                liked_experiences_response = supabase.table("experiences").select("*").in_("id", liked_ids).execute()
+                # Fetch liked experiences to extract tags
+                liked_experiences = get_experiences_by_ids(liked_ids)
                 
-                if liked_experiences_response.data:
+                if liked_experiences:
                     # Extract tags from liked experiences
                     all_tags = []
-                    for exp in liked_experiences_response.data:
+                    for exp in liked_experiences:
                         if exp.get("tags"):
                             if isinstance(exp["tags"], list):
                                 all_tags.extend(exp["tags"])
@@ -125,38 +137,31 @@ async def get_initial_experiences(user_id: str):
                                 all_tags.extend([t.strip() for t in exp["tags"].split(',')])
                     
                     if all_tags:
-                        # Use Qdrant to find similar experiences
-                        tag_query = ", ".join(list(set(all_tags)))  # Remove duplicates
+                        # Create tags query and exclude already swiped experiences
+                        tag_query = ", ".join(list(set(all_tags)))
+                        exclude_ids_str = "`".join(already_swiped) if already_swiped else ""
+                        
+                        # Use Qdrant search_similar function
                         qdrant_results = search_engine.search_similar(
-                            query=f"Tags: {tag_query}",
-                            top_k=15,
+                            query=f"Tags: {tag_query} exclude experiences {exclude_ids_str}",
+                            top_k=7,
                             use_structured_parsing=True
                         )
                         
-                        # Get experience IDs from Qdrant results, excluding already swiped
-                        recommended_ids = []
-                        for result in qdrant_results:
-                            exp_id = result.get("id")
-                            if exp_id and exp_id not in already_swiped and len(recommended_ids) < 7:
-                                recommended_ids.append(exp_id)
-                        
-                        # Fetch full experience data from Supabase
-                        if recommended_ids:
-                            experiences_response = supabase.table("experiences").select("*").in_("id", recommended_ids).execute()
-                            if experiences_response.data:
-                                return experiences_response.data[:7]
+                        if qdrant_results:
+                            # Extract experience IDs from Qdrant results
+                            recommended_ids = [result.get("id") for result in qdrant_results if result.get("id")]
+                            
+                            # Get full experience data from Supabase
+                            experiences = get_experiences_by_ids(recommended_ids)
+                            if experiences:
+                                return experiences[:7]
             
             # Fallback: Get random experiences excluding already swiped
-            if already_swiped:
-                # Use filter with not operator for excluding already swiped
-                all_experiences_response = supabase.table("experiences").select("*").execute()
-                if all_experiences_response.data:
-                    # Filter out already swiped experiences
-                    filtered_experiences = [exp for exp in all_experiences_response.data if exp["id"] not in already_swiped]
-                    return filtered_experiences[:7]
-            else:
-                random_response = supabase.table("experiences").select("*").limit(7).execute()
-                return random_response.data if random_response.data else []
+            all_experiences_response = supabase.table("experiences").select("*").execute()
+            if all_experiences_response.data:
+                filtered_experiences = [exp for exp in all_experiences_response.data if exp["id"] not in already_swiped]
+                return filtered_experiences[:7]
         
         else:
             logger.info(f"New user {user_id}. Providing diverse initial experiences")
@@ -178,9 +183,9 @@ async def get_initial_experiences(user_id: str):
                         if qdrant_results:
                             exp_id = qdrant_results[0].get("id")
                             if exp_id:
-                                exp_response = supabase.table("experiences").select("*").eq("id", exp_id).execute()
-                                if exp_response.data:
-                                    diverse_experiences.extend(exp_response.data)
+                                exp_data = get_experiences_by_ids([exp_id])
+                                if exp_data:
+                                    diverse_experiences.extend(exp_data)
                                     if len(diverse_experiences) >= 7:
                                         break
                     
@@ -199,13 +204,13 @@ async def get_initial_experiences(user_id: str):
         raise HTTPException(status_code=500, detail=f"Error getting initial experiences: {str(e)}")
     
     finally:
-        # Ensure search_engine is cleaned up (goes out of scope)
+        # Ensure search_engine is cleaned up
         search_engine = None
 
 @app.post("/recommendation")
 async def get_recommendations(request: SwipeRequest):
     """
-    Update swipes table and return 5 relevant recommendations.
+    Update swipes table and return 5 relevant recommendations using Qdrant.
     Stateless: All data is immediately persisted to Supabase and discarded after response.
     """
     # Create fresh search engine instance for this request only
@@ -278,21 +283,21 @@ async def get_recommendations(request: SwipeRequest):
                 "updated_at": "now()"
             }).eq("user_id", user_id).execute()
         
-        # Get all already swiped IDs from Supabase
+        # Get all already swiped IDs
         all_swiped = []
         all_swiped.extend(final_likes)
         all_swiped.extend(final_dislikes)
         all_swiped.extend(final_skips)
         
-        # Generate recommendations using Qdrant if available
+        # Generate recommendations using Qdrant if available and we have likes
         if search_engine and final_likes:
-            # Fetch liked experiences from Supabase
-            liked_experiences_response = supabase.table("experiences").select("*").in_("id", final_likes).execute()
+            # Fetch liked experiences from Supabase to extract tags
+            liked_experiences = get_experiences_by_ids(final_likes)
             
-            if liked_experiences_response.data:
+            if liked_experiences:
                 # Extract tags from liked experiences
                 all_tags = []
-                for exp in liked_experiences_response.data:
+                for exp in liked_experiences:
                     if exp.get("tags"):
                         if isinstance(exp["tags"], list):
                             all_tags.extend(exp["tags"])
@@ -300,40 +305,32 @@ async def get_recommendations(request: SwipeRequest):
                             all_tags.extend([t.strip() for t in exp["tags"].split(',')])
                 
                 if all_tags:
-                    # Use Qdrant to find similar experiences
-                    unique_tags = list(set(all_tags))  # Remove duplicates
+                    # Create tags query and exclude already swiped experiences
+                    unique_tags = list(set(all_tags))
                     tag_query = ", ".join(unique_tags)
+                    exclude_ids_str = "`".join(all_swiped) if all_swiped else ""
                     
+                    # Use Qdrant search_similar function with exclusion
                     qdrant_results = search_engine.search_similar(
-                        query=f"Tags: {tag_query}",
-                        top_k=20,
+                        query=f"Tags: {tag_query} exclude experiences {exclude_ids_str}",
+                        top_k=5,
                         use_structured_parsing=True
                     )
                     
-                    # Get experience IDs from Qdrant results, excluding already swiped
-                    recommended_ids = []
-                    for result in qdrant_results:
-                        exp_id = result.get("id")
-                        if exp_id and exp_id not in all_swiped and len(recommended_ids) < 5:
-                            recommended_ids.append(exp_id)
-                    
-                    # Fetch full experience data from Supabase
-                    if recommended_ids:
-                        recommendations_response = supabase.table("experiences").select("*").in_("id", recommended_ids).execute()
-                        if recommendations_response.data:
-                            return recommendations_response.data[:5]
+                    if qdrant_results:
+                        # Extract experience IDs from Qdrant results
+                        recommended_ids = [result.get("id") for result in qdrant_results if result.get("id")]
+                        
+                        # Get full experience data from Supabase
+                        recommended_experiences = get_experiences_by_ids(recommended_ids)
+                        if recommended_experiences:
+                            return recommended_experiences[:5]
         
         # Fallback: Get random experiences excluding already swiped
-        if all_swiped:
-            # Get all experiences and filter out already swiped ones
-            all_experiences_response = supabase.table("experiences").select("*").execute()
-            if all_experiences_response.data:
-                # Filter out already swiped experiences
-                filtered_experiences = [exp for exp in all_experiences_response.data if exp["id"] not in all_swiped]
-                return filtered_experiences[:5]
-        else:
-            random_response = supabase.table("experiences").select("*").limit(5).execute()
-            return random_response.data if random_response.data else []
+        all_experiences_response = supabase.table("experiences").select("*").execute()
+        if all_experiences_response.data:
+            filtered_experiences = [exp for exp in all_experiences_response.data if exp["id"] not in all_swiped]
+            return filtered_experiences[:5]
         
         return []
     
@@ -342,5 +339,5 @@ async def get_recommendations(request: SwipeRequest):
         raise HTTPException(status_code=500, detail=f"Error getting recommendations: {str(e)}")
     
     finally:
-        # Ensure search_engine is cleaned up (goes out of scope)
+        # Ensure search_engine is cleaned up
         search_engine = None
