@@ -14,6 +14,10 @@ logger = logging.getLogger(__name__)
 
 # Load environment variables
 load_dotenv()
+load_dotenv()
+load_dotenv()
+load_dotenv(override=True)
+
 
 # Supabase configuration
 SUPABASE_URL = os.getenv("SUPABASE_URL")
@@ -21,7 +25,7 @@ SUPABASE_KEY = os.getenv("SUPABASE_SERVICE_ROLE_KEY")
 
 # Qdrant configuration
 QDRANT_URL = os.getenv("QDRANT_URL")
-QDRANT_API_KEY = os.getenv("QDRANT_API_KEY")
+QDRANT_API_KEY = os.getenv("QDRANT_API")
 
 # Validate required environment variables
 if not SUPABASE_URL or not SUPABASE_KEY:
